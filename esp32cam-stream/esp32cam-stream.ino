@@ -31,6 +31,7 @@ static const char* _STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %
 
 httpd_handle_t stream_httpd = NULL;
 
+// 1. Manejador para streaming continuo MJPEG (/stream)
 static esp_err_t stream_handler(httpd_req_t *req) {
   camera_fb_t * fb = NULL;
   esp_err_t res = ESP_OK;
@@ -72,6 +73,21 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return res;
 }
 
+// 2. Manejador instantáneo para MATLAB sin dependencias (/jpg)
+static esp_err_t capture_handler(httpd_req_t *req) {
+  camera_fb_t * fb = esp_camera_fb_get();
+  if (!fb) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "image/jpeg");
+  httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  esp_err_t res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
+  esp_camera_fb_return(fb);
+  return res;
+}
+
 void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
@@ -84,8 +100,16 @@ void startCameraServer() {
     .user_ctx  = NULL
   };
 
+  httpd_uri_t capture_uri = {
+    .uri       = "/jpg",
+    .method    = HTTP_GET,
+    .handler   = capture_handler,
+    .user_ctx  = NULL
+  };
+
   if (httpd_start(&stream_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
+    httpd_register_uri_handler(stream_httpd, &capture_uri);
   }
 }
 
@@ -115,12 +139,11 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  // Configuración de fluidez: resolución QVGA (320x240) o CIF (400x296) y doble buffer PSRAM
   if(psramFound()){
     config.frame_size = FRAMESIZE_QVGA; 
     config.jpeg_quality = 12;
     config.fb_count = 2;
-    config.grab_mode = CAMERA_GRAB_LATEST; // Siempre toma el fotograma más reciente
+    config.grab_mode = CAMERA_GRAB_LATEST;
   } else {
     config.frame_size = FRAMESIZE_QVGA;
     config.jpeg_quality = 14;
@@ -134,7 +157,7 @@ void setup() {
   }
 
   sensor_t * s = esp_camera_sensor_get();
-  s->set_vflip(s, 1); // Corrige la orientación vertical si está invertida
+  s->set_vflip(s, 1);
 
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
@@ -146,10 +169,12 @@ void setup() {
   Serial.print("STREAM_URL: http://");
   Serial.print(WiFi.localIP());
   Serial.println("/stream");
+  Serial.print("CAPTURE_URL: http://");
+  Serial.print(WiFi.localIP());
+  Serial.println("/jpg");
 }
 
 void loop() {
-  // Recepción de órdenes desde MATLAB vía USB CH340
   if (Serial.available() > 0) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
